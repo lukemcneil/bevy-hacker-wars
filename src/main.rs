@@ -27,15 +27,17 @@ fn main() {
                 })
                 .build(),
         )
-        .init_resource::<BulletsAssets>()
-        .register_type::<BulletsAssets>()
+        .init_resource::<BulletMesh>()
+        .register_type::<BulletMesh>()
+        .init_resource::<PlayerMesh>()
+        .register_type::<PlayerMesh>()
         .register_type::<Player>()
-        .register_type::<Ball>()
+        .register_type::<Bullet>()
         .register_type::<Velocity>()
         .add_plugins(
             WorldInspectorPlugin::default().run_if(input_toggle_active(true, KeyCode::Escape)),
         )
-        .add_systems(Startup, (setup, setup_gamepads, setup_bullet_assets))
+        .add_systems(Startup, (setup, setup_gamepads, setup_assets))
         .add_systems(
             Update,
             (
@@ -44,6 +46,7 @@ fn main() {
                 player_rotation,
                 create_bullets,
                 apply_velocity,
+                despawn_bullets,
             ),
         )
         .run();
@@ -67,20 +70,25 @@ fn setup_gamepads(mut settings: ResMut<GamepadSettings>) {
 
 #[derive(Resource, Default, Reflect)]
 #[reflect(Resource)]
-struct BulletsAssets {
+struct BulletMesh {
     mesh_handle: Handle<Mesh>,
-    material_handle: Handle<ColorMaterial>,
 }
 
-fn setup_bullet_assets(
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
+struct PlayerMesh {
+    mesh_handle: Handle<Mesh>,
+}
+
+fn setup_assets(
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-    mut bullets_assets: ResMut<BulletsAssets>,
+    mut bullet_mesh: ResMut<BulletMesh>,
+    mut player_mesh: ResMut<PlayerMesh>,
 ) {
-    let mesh_handle = meshes.add(shape::Circle::default().into());
-    let material_handle = materials.add(ColorMaterial::from(Color::rgb(1.0, 0.5, 0.5)));
-    bullets_assets.mesh_handle = mesh_handle;
-    bullets_assets.material_handle = material_handle;
+    let bullet_mesh_handle = meshes.add(shape::Circle::default().into());
+    bullet_mesh.mesh_handle = bullet_mesh_handle;
+    let player_mesh_handle = meshes.add(shape::Box::new(1.0, 1.0, 1.0).into());
+    player_mesh.mesh_handle = player_mesh_handle;
 }
 
 #[derive(Component, Default, Reflect)]
@@ -89,6 +97,7 @@ struct Player {
     speed: f32,
     rotation_speed: f32,
     gamepad_id: usize,
+    material_handle: Handle<ColorMaterial>,
 }
 
 #[derive(Component, Default, Reflect, Deref, DerefMut)]
@@ -97,37 +106,46 @@ struct Velocity(Vec2);
 
 #[derive(Component, Default, Reflect)]
 #[reflect(Component)]
-struct Ball;
+struct Bullet;
 
 fn gamepad_connections(
     mut commands: Commands,
-    asset_server: Res<AssetServer>,
     mut connection_events: EventReader<GamepadConnectionEvent>,
     players: Query<(Entity, &Player)>,
     windows: Query<&Window>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    player_mesh: Res<PlayerMesh>,
 ) {
     for connection_event in connection_events.iter() {
         let gamepad = connection_event.gamepad;
         match &connection_event.connection {
             bevy::input::gamepad::GamepadConnection::Connected(info) => {
-                let texture = asset_server.load("pikachu.png");
                 let window = windows.single();
                 let w = window.width() / 2.0;
                 let h = window.height() / 2.0;
+                let mut rng = rand::thread_rng();
+                let material_handle = materials.add(ColorMaterial::from(Color::rgb(
+                    rng.gen_range(0.0..1.0),
+                    rng.gen_range(0.0..1.0),
+                    rng.gen_range(0.0..1.0),
+                )));
                 commands.spawn((
-                    SpriteBundle {
-                        texture,
+                    MaterialMesh2dBundle {
+                        mesh: player_mesh.mesh_handle.clone().into(),
+                        material: material_handle.clone(),
                         transform: Transform::from_translation(Vec3 {
                             x: rand::thread_rng().gen_range(-w..w),
                             y: rand::thread_rng().gen_range(-h..h),
-                            z: 0.0,
-                        }),
+                            z: gamepad.id as f32,
+                        })
+                        .with_scale(Vec3::new(50.0, 50.0, 0.0)),
                         ..default()
                     },
                     Player {
                         speed: 500.0,
                         rotation_speed: 7000.0,
                         gamepad_id: gamepad.id,
+                        material_handle,
                     },
                     Name::new(format!("Player: {}", info.name)),
                 ));
@@ -149,6 +167,7 @@ fn player_movement(
     axes: Res<Axis<GamepadAxis>>,
     time: Res<Time>,
     gamepads: Res<Gamepads>,
+    windows: Query<&Window>,
 ) {
     for gamepad in gamepads.iter() {
         for (mut transform, player) in &mut players {
@@ -171,6 +190,13 @@ fn player_movement(
                 }
                 transform.translation.x += movement_amount * v.x;
                 transform.translation.y += movement_amount * v.y;
+                let window = windows.single();
+                let bounds = Vec3 {
+                    x: window.width() / 2.0,
+                    y: window.height() / 2.0,
+                    z: f32::MAX,
+                };
+                transform.translation = transform.translation.clamp(-bounds, bounds);
             }
         }
     }
@@ -217,7 +243,7 @@ fn player_rotation(
 fn create_bullets(
     mut gamepad_evr: EventReader<GamepadEvent>,
     mut commands: Commands,
-    bullets_assets: Res<BulletsAssets>,
+    bullet_mesh: Res<BulletMesh>,
     players: Query<(&Transform, &Player)>,
 ) {
     for ev in gamepad_evr.iter() {
@@ -234,15 +260,15 @@ fn create_bullets(
                             angle += PI / 2.0;
                             commands.spawn((
                                 MaterialMesh2dBundle {
-                                    mesh: bullets_assets.mesh_handle.clone().into(),
-                                    material: bullets_assets.material_handle.clone(),
+                                    mesh: bullet_mesh.mesh_handle.clone().into(),
+                                    material: player.material_handle.clone(),
                                     transform: Transform::from_translation(transform.translation)
-                                        .with_scale(Vec3::new(10.0, 10.0, 10.0)),
+                                        .with_scale(Vec3::new(10.0, 10.0, 0.0)),
                                     ..default()
                                 },
-                                Ball,
+                                Bullet,
                                 Velocity(Vec2::from_angle(angle).rotate(Vec2::X * 600.0)),
-                                Name::new("Ball"),
+                                Name::new("Bullet"),
                             ));
                         }
                     }
@@ -258,5 +284,22 @@ fn apply_velocity(mut query: Query<(&mut Transform, &Velocity)>, time: Res<Time>
     for (mut transform, velocity) in &mut query {
         transform.translation.x += velocity.x * time.delta_seconds();
         transform.translation.y += velocity.y * time.delta_seconds();
+    }
+}
+
+fn despawn_bullets(
+    query: Query<(Entity, &Transform), With<Bullet>>,
+    windows: Query<&Window>,
+    mut commands: Commands,
+) {
+    let window = windows.single();
+    for (entity, transform) in &query {
+        if transform.translation.x < -window.width() / 2.0
+            || transform.translation.x > window.width() / 2.0
+            || transform.translation.y < -window.height() / 2.0
+            || transform.translation.y > window.height() / 2.0
+        {
+            commands.entity(entity).despawn();
+        }
     }
 }
