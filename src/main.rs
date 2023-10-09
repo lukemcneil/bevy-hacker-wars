@@ -34,7 +34,6 @@ fn main() {
         .register_type::<Player>()
         .register_type::<Bullet>()
         .register_type::<Velocity>()
-        .register_type::<ID>()
         .register_type::<Health>()
         .add_plugins(
             WorldInspectorPlugin::default().run_if(input_toggle_active(true, KeyCode::Escape)),
@@ -99,6 +98,7 @@ fn setup_assets(
 struct Player {
     speed: f32,
     rotation_speed: f32,
+    gamepad_id: usize,
     material_handle: Handle<ColorMaterial>,
 }
 
@@ -108,11 +108,9 @@ struct Velocity(Vec2);
 
 #[derive(Component, Default, Reflect)]
 #[reflect(Component)]
-struct Bullet;
-
-#[derive(Component, Default, Reflect, Deref, DerefMut)]
-#[reflect(Component)]
-struct ID(usize);
+struct Bullet {
+    gamepad_id: usize,
+}
 
 #[derive(Component, Default, Reflect)]
 #[reflect(Component)]
@@ -124,7 +122,7 @@ struct Health {
 fn gamepad_connections(
     mut commands: Commands,
     mut connection_events: EventReader<GamepadConnectionEvent>,
-    players: Query<(Entity, &ID), With<Player>>,
+    players: Query<(Entity, &Player)>,
     windows: Query<&Window>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     player_mesh: Res<PlayerMesh>,
@@ -158,8 +156,8 @@ fn gamepad_connections(
                         speed: 500.0,
                         rotation_speed: 7000.0,
                         material_handle,
+                        gamepad_id: gamepad.id,
                     },
-                    ID(gamepad.id),
                     Health {
                         starting_health: 5,
                         current_health: 5,
@@ -168,8 +166,8 @@ fn gamepad_connections(
                 ));
             }
             bevy::input::gamepad::GamepadConnection::Disconnected => {
-                for (player_entity, id) in players.iter() {
-                    if id.0 == gamepad.id {
+                for (player_entity, player) in players.iter() {
+                    if player.gamepad_id == gamepad.id {
                         commands.entity(player_entity).despawn();
                         return;
                     }
@@ -180,15 +178,15 @@ fn gamepad_connections(
 }
 
 fn player_movement(
-    mut players: Query<(&mut Transform, &ID, &Player)>,
+    mut players: Query<(&mut Transform, &Player)>,
     axes: Res<Axis<GamepadAxis>>,
     time: Res<Time>,
     gamepads: Res<Gamepads>,
     windows: Query<&Window>,
 ) {
     for gamepad in gamepads.iter() {
-        for (mut transform, id, player) in &mut players {
-            if id.0 != gamepad.id {
+        for (mut transform, player) in &mut players {
+            if player.gamepad_id != gamepad.id {
                 continue;
             }
             let axis_lx = GamepadAxis {
@@ -220,14 +218,14 @@ fn player_movement(
 }
 
 fn player_rotation(
-    mut players: Query<(&mut Transform, &ID, &Player)>,
+    mut players: Query<(&mut Transform, &Player)>,
     axes: Res<Axis<GamepadAxis>>,
     time: Res<Time>,
     gamepads: Res<Gamepads>,
 ) {
     for gamepad in gamepads.iter() {
-        for (mut transform, id, player) in &mut players {
-            if id.0 != gamepad.id {
+        for (mut transform, player) in &mut players {
+            if player.gamepad_id != gamepad.id {
                 continue;
             }
             let axis_rx = GamepadAxis {
@@ -261,14 +259,14 @@ fn create_bullets(
     mut gamepad_evr: EventReader<GamepadEvent>,
     mut commands: Commands,
     bullet_mesh: Res<BulletMesh>,
-    players: Query<(&Transform, &ID, &Player)>,
+    players: Query<(&Transform, &Player)>,
 ) {
     for ev in gamepad_evr.iter() {
         match ev {
             GamepadEvent::Button(button_ev) => match button_ev.button_type {
                 GamepadButtonType::RightTrigger => {
-                    for (transform, id, player) in &players {
-                        if id.0 != button_ev.gamepad.id {
+                    for (transform, player) in &players {
+                        if player.gamepad_id != button_ev.gamepad.id {
                             continue;
                         }
                         if button_ev.value == 1.0 {
@@ -283,8 +281,9 @@ fn create_bullets(
                                         .with_scale(Vec3::new(10.0, 10.0, 0.0)),
                                     ..default()
                                 },
-                                Bullet,
-                                ID(button_ev.gamepad.id),
+                                Bullet {
+                                    gamepad_id: button_ev.gamepad.id,
+                                },
                                 Velocity(Vec2::from_angle(angle).rotate(Vec2::X * 600.0)),
                                 Name::new("Bullet"),
                             ));
@@ -323,13 +322,13 @@ fn despawn_bullets(
 }
 
 fn check_for_collisions(
-    bullet_query: Query<(Entity, &Transform, &ID), With<Bullet>>,
-    mut player_query: Query<(Entity, &ID, &Transform, &mut Health), With<Player>>,
+    bullet_query: Query<(Entity, &Transform, &Bullet)>,
+    mut player_query: Query<(Entity, &Transform, &Player, &mut Health)>,
     mut commands: Commands,
 ) {
-    for (player_entity, player_id, player_transform, mut player_health) in &mut player_query {
-        for (bullet_entity, bullet_transform, bullet_id) in &bullet_query {
-            if player_id.0 == bullet_id.0 {
+    for (bullet_entity, bullet_transform, bullet) in &bullet_query {
+        for (player_entity, player_transform, player, mut player_health) in &mut player_query {
+            if player.gamepad_id == bullet.gamepad_id {
                 continue;
             }
             let collision = collide(
