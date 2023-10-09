@@ -1,9 +1,10 @@
 use std::f32::consts::PI;
 
 use bevy::{
+    diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
     input::{
         common_conditions::input_toggle_active,
-        gamepad::{GamepadConnectionEvent, GamepadEvent, GamepadSettings},
+        gamepad::{GamepadConnectionEvent, GamepadSettings},
     },
     prelude::*,
     sprite::{collide_aabb::collide, MaterialMesh2dBundle},
@@ -19,7 +20,7 @@ fn main() {
                 .set(WindowPlugin {
                     primary_window: Some(Window {
                         title: "Hacker Wars".into(),
-                        resolution: (1000.0, 600.0).into(),
+                        resolution: (1500.0, 1000.0).into(),
                         resizable: true,
                         ..default()
                     }),
@@ -27,6 +28,10 @@ fn main() {
                 })
                 .build(),
         )
+        .add_plugins((
+            LogDiagnosticsPlugin::default(),
+            FrameTimeDiagnosticsPlugin::default(),
+        ))
         .init_resource::<BulletMesh>()
         .register_type::<BulletMesh>()
         .init_resource::<PlayerMesh>()
@@ -35,6 +40,7 @@ fn main() {
         .register_type::<Bullet>()
         .register_type::<Velocity>()
         .register_type::<Health>()
+        .register_type::<Shooter>()
         .add_plugins(
             WorldInspectorPlugin::default().run_if(input_toggle_active(true, KeyCode::Escape)),
         )
@@ -49,6 +55,7 @@ fn main() {
                 apply_velocity,
                 despawn_bullets,
                 check_for_collisions,
+                // bounce_bullets,
             ),
         )
         .run();
@@ -108,6 +115,12 @@ struct Velocity(Vec2);
 
 #[derive(Component, Default, Reflect)]
 #[reflect(Component)]
+struct Shooter {
+    timer: Timer,
+}
+
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
 struct Bullet {
     gamepad_id: usize,
 }
@@ -154,13 +167,16 @@ fn gamepad_connections(
                     },
                     Player {
                         speed: 500.0,
-                        rotation_speed: 7000.0,
+                        rotation_speed: 13.0,
                         material_handle,
                         gamepad_id: gamepad.id,
                     },
                     Health {
-                        starting_health: 5,
-                        current_health: 5,
+                        starting_health: 500,
+                        current_health: 500,
+                    },
+                    Shooter {
+                        timer: Timer::from_seconds(0.001, TimerMode::Repeating),
                     },
                     Name::new(format!("Player: {}", info.name)),
                 ));
@@ -237,14 +253,13 @@ fn player_rotation(
                 axis_type: GamepadAxisType::RightStickY,
             };
             if let (Some(x), Some(y)) = (axes.get(axis_rx), axes.get(axis_ry)) {
-                let rotation_amount = player.rotation_speed * time.delta_seconds();
                 let v = Vec2 { x, y };
                 if v != Vec2::ZERO {
                     let target_quat = Quat::from_rotation_z(-v.angle_between(Vec2::X) - PI / 2.0);
                     let angle_between = transform.rotation.angle_between(target_quat);
-                    let max_angle = rotation_amount * time.delta_seconds();
+                    let max_angle = player.rotation_speed * time.delta_seconds();
                     if angle_between > max_angle {
-                        let s = max_angle / (angle_between);
+                        let s = max_angle / angle_between;
                         transform.rotation = transform.rotation.slerp(target_quat, s);
                     } else {
                         transform.rotation = target_quat;
@@ -256,43 +271,32 @@ fn player_rotation(
 }
 
 fn create_bullets(
-    mut gamepad_evr: EventReader<GamepadEvent>,
     mut commands: Commands,
     bullet_mesh: Res<BulletMesh>,
-    players: Query<(&Transform, &Player)>,
+    mut players: Query<(&Transform, &Player, &mut Shooter)>,
+    time: Res<Time>,
 ) {
-    for ev in gamepad_evr.iter() {
-        match ev {
-            GamepadEvent::Button(button_ev) => match button_ev.button_type {
-                GamepadButtonType::RightTrigger => {
-                    for (transform, player) in &players {
-                        if player.gamepad_id != button_ev.gamepad.id {
-                            continue;
-                        }
-                        if button_ev.value == 1.0 {
-                            let (v, mut angle) = transform.rotation.to_axis_angle();
-                            angle *= v.z;
-                            angle += PI / 2.0;
-                            commands.spawn((
-                                MaterialMesh2dBundle {
-                                    mesh: bullet_mesh.mesh_handle.clone().into(),
-                                    material: player.material_handle.clone(),
-                                    transform: Transform::from_translation(transform.translation)
-                                        .with_scale(Vec3::new(10.0, 10.0, 0.0)),
-                                    ..default()
-                                },
-                                Bullet {
-                                    gamepad_id: button_ev.gamepad.id,
-                                },
-                                Velocity(Vec2::from_angle(angle).rotate(Vec2::X * 600.0)),
-                                Name::new("Bullet"),
-                            ));
-                        }
-                    }
-                }
-                _ => return,
-            },
-            _ => return,
+    for (transform, player, mut shooter) in &mut players {
+        shooter.timer.tick(time.delta());
+
+        if shooter.timer.just_finished() {
+            let (v, mut angle) = transform.rotation.to_axis_angle();
+            angle *= v.z;
+            angle += PI / 2.0;
+            commands.spawn((
+                MaterialMesh2dBundle {
+                    mesh: bullet_mesh.mesh_handle.clone().into(),
+                    material: player.material_handle.clone(),
+                    transform: Transform::from_translation(transform.translation)
+                        .with_scale(Vec3::new(10.0, 10.0, 0.0)),
+                    ..default()
+                },
+                Bullet {
+                    gamepad_id: player.gamepad_id,
+                },
+                Velocity(Vec2::from_angle(angle).rotate(Vec2::X * 600.0)),
+                Name::new("Bullet"),
+            ));
         }
     }
 }
@@ -304,13 +308,32 @@ fn apply_velocity(mut query: Query<(&mut Transform, &Velocity)>, time: Res<Time>
     }
 }
 
+// fn bounce_bullets(
+//     mut query: Query<(&Transform, &mut Velocity), With<Bullet>>,
+//     windows: Query<&Window>,
+// ) {
+//     let window = windows.single();
+//     for (transform, mut velocity) in &mut query {
+//         if transform.translation.x < -window.width() / 2.0
+//             || transform.translation.x > window.width() / 2.0
+//         {
+//             velocity.x = -velocity.x;
+//         }
+//         if transform.translation.y < -window.height() / 2.0
+//             || transform.translation.y > window.height() / 2.0
+//         {
+//             velocity.y = -velocity.y;
+//         }
+//     }
+// }
+
 fn despawn_bullets(
-    query: Query<(Entity, &Transform), With<Bullet>>,
+    mut query: Query<(Entity, &Transform), With<Bullet>>,
     windows: Query<&Window>,
     mut commands: Commands,
 ) {
     let window = windows.single();
-    for (entity, transform) in &query {
+    for (entity, transform) in &mut query {
         if transform.translation.x < -window.width() / 2.0
             || transform.translation.x > window.width() / 2.0
             || transform.translation.y < -window.height() / 2.0
