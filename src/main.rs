@@ -3,9 +3,10 @@ use std::f32::consts::PI;
 use bevy::{
     input::{
         common_conditions::input_toggle_active,
-        gamepad::{GamepadConnectionEvent, GamepadSettings},
+        gamepad::{GamepadConnectionEvent, GamepadEvent, GamepadSettings},
     },
     prelude::*,
+    sprite::MaterialMesh2dBundle,
 };
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use rand::Rng;
@@ -26,14 +27,24 @@ fn main() {
                 })
                 .build(),
         )
+        .init_resource::<BulletsAssets>()
+        .register_type::<BulletsAssets>()
         .register_type::<Player>()
+        .register_type::<Ball>()
+        .register_type::<Velocity>()
         .add_plugins(
             WorldInspectorPlugin::default().run_if(input_toggle_active(true, KeyCode::Escape)),
         )
-        .add_systems(Startup, (setup, setup_gamepads))
+        .add_systems(Startup, (setup, setup_gamepads, setup_bullet_assets))
         .add_systems(
             Update,
-            (gamepad_connections, player_movement, player_rotation),
+            (
+                gamepad_connections,
+                player_movement,
+                player_rotation,
+                create_bullets,
+                apply_velocity,
+            ),
         )
         .run();
 }
@@ -54,6 +65,24 @@ fn setup_gamepads(mut settings: ResMut<GamepadSettings>) {
     settings.default_axis_settings.set_deadzone_upperbound(dz);
 }
 
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
+struct BulletsAssets {
+    mesh_handle: Handle<Mesh>,
+    material_handle: Handle<ColorMaterial>,
+}
+
+fn setup_bullet_assets(
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    mut bullets_assets: ResMut<BulletsAssets>,
+) {
+    let mesh_handle = meshes.add(shape::Circle::default().into());
+    let material_handle = materials.add(ColorMaterial::from(Color::rgb(1.0, 0.5, 0.5)));
+    bullets_assets.mesh_handle = mesh_handle;
+    bullets_assets.material_handle = material_handle;
+}
+
 #[derive(Component, Default, Reflect)]
 #[reflect(Component)]
 struct Player {
@@ -61,6 +90,14 @@ struct Player {
     rotation_speed: f32,
     gamepad_id: usize,
 }
+
+#[derive(Component, Default, Reflect, Deref, DerefMut)]
+#[reflect(Component)]
+struct Velocity(Vec2);
+
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
+struct Ball;
 
 fn gamepad_connections(
     mut commands: Commands,
@@ -108,13 +145,13 @@ fn gamepad_connections(
 }
 
 fn player_movement(
-    mut characters: Query<(&mut Transform, &Player)>,
+    mut players: Query<(&mut Transform, &Player)>,
     axes: Res<Axis<GamepadAxis>>,
     time: Res<Time>,
     gamepads: Res<Gamepads>,
 ) {
     for gamepad in gamepads.iter() {
-        for (mut transform, player) in &mut characters {
+        for (mut transform, player) in &mut players {
             if player.gamepad_id != gamepad.id {
                 continue;
             }
@@ -140,13 +177,13 @@ fn player_movement(
 }
 
 fn player_rotation(
-    mut characters: Query<(&mut Transform, &Player)>,
+    mut players: Query<(&mut Transform, &Player)>,
     axes: Res<Axis<GamepadAxis>>,
     time: Res<Time>,
     gamepads: Res<Gamepads>,
 ) {
     for gamepad in gamepads.iter() {
-        for (mut transform, player) in &mut characters {
+        for (mut transform, player) in &mut players {
             if player.gamepad_id != gamepad.id {
                 continue;
             }
@@ -174,5 +211,52 @@ fn player_rotation(
                 }
             }
         }
+    }
+}
+
+fn create_bullets(
+    mut gamepad_evr: EventReader<GamepadEvent>,
+    mut commands: Commands,
+    bullets_assets: Res<BulletsAssets>,
+    players: Query<(&Transform, &Player)>,
+) {
+    for ev in gamepad_evr.iter() {
+        match ev {
+            GamepadEvent::Button(button_ev) => match button_ev.button_type {
+                GamepadButtonType::RightTrigger => {
+                    for (transform, player) in &players {
+                        if player.gamepad_id != button_ev.gamepad.id {
+                            continue;
+                        }
+                        if button_ev.value == 1.0 {
+                            let (v, mut angle) = transform.rotation.to_axis_angle();
+                            angle *= v.z;
+                            angle += PI / 2.0;
+                            commands.spawn((
+                                MaterialMesh2dBundle {
+                                    mesh: bullets_assets.mesh_handle.clone().into(),
+                                    material: bullets_assets.material_handle.clone(),
+                                    transform: Transform::from_translation(transform.translation)
+                                        .with_scale(Vec3::new(10.0, 10.0, 10.0)),
+                                    ..default()
+                                },
+                                Ball,
+                                Velocity(Vec2::from_angle(angle).rotate(Vec2::X * 600.0)),
+                                Name::new("Ball"),
+                            ));
+                        }
+                    }
+                }
+                _ => return,
+            },
+            _ => return,
+        }
+    }
+}
+
+fn apply_velocity(mut query: Query<(&mut Transform, &Velocity)>, time: Res<Time>) {
+    for (mut transform, velocity) in &mut query {
+        transform.translation.x += velocity.x * time.delta_seconds();
+        transform.translation.y += velocity.y * time.delta_seconds();
     }
 }
