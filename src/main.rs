@@ -8,6 +8,7 @@ use bevy::{
     },
     prelude::*,
     sprite::{collide_aabb::collide, MaterialMesh2dBundle},
+    utils::HashSet,
 };
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use rand::Rng;
@@ -55,7 +56,9 @@ fn main() {
                 create_bullets,
                 apply_velocity,
                 despawn_bullets,
-                check_for_collisions,
+                check_for_collisions
+                    .after(apply_velocity)
+                    .after(player_movement),
                 // bounce_bullets,
             ),
         )
@@ -346,28 +349,44 @@ fn despawn_bullets(
 }
 
 fn check_for_collisions(
-    bullet_query: Query<(Entity, &Transform, &ID), With<Bullet>>,
-    mut player_query: Query<(Entity, &ID, &Transform, &mut Health), With<Player>>,
+    bullet_query: Query<(Entity, &ID, &Transform), With<Bullet>>,
+    mut hit_query: Query<(Entity, &ID, &Transform, Option<&mut Health>)>,
     mut commands: Commands,
 ) {
-    for (player_entity, player_id, player_transform, mut player_health) in &mut player_query {
-        for (bullet_entity, bullet_transform, bullet_id) in &bullet_query {
-            if player_id.0 == bullet_id.0 {
+    let mut bullets_despawned = HashSet::new();
+    for (bullet_entity, bullet_id, bullet_transform) in &bullet_query {
+        if bullets_despawned.contains(&bullet_entity) {
+            continue;
+        }
+        for (hit_entity, hit_id, hit_transform, player_health) in &mut hit_query {
+            if bullets_despawned.contains(&hit_entity) {
+                continue;
+            }
+            if hit_id.0 == bullet_id.0 {
                 continue;
             }
             let collision = collide(
-                player_transform.translation,
-                player_transform.scale.truncate(),
+                hit_transform.translation,
+                hit_transform.scale.truncate(),
                 bullet_transform.translation,
                 bullet_transform.scale.truncate(),
             );
             if let Some(_) = collision {
                 commands.entity(bullet_entity).despawn();
-
-                player_health.current_health -= 1;
-                if player_health.current_health == 0 {
-                    commands.entity(player_entity).despawn();
+                bullets_despawned.insert(bullet_entity);
+                match player_health {
+                    Some(mut player_health) => {
+                        player_health.current_health -= 1;
+                        if player_health.current_health == 0 {
+                            commands.entity(hit_entity).despawn();
+                        }
+                    }
+                    None => {
+                        commands.entity(hit_entity).despawn();
+                        bullets_despawned.insert(hit_entity);
+                    }
                 }
+                break;
             }
         }
     }
