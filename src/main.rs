@@ -39,6 +39,7 @@ fn main() {
         .register_type::<Player>()
         .register_type::<Bullet>()
         .register_type::<Velocity>()
+        .register_type::<ID>()
         .register_type::<Health>()
         .register_type::<Shooter>()
         .add_plugins(
@@ -105,7 +106,6 @@ fn setup_assets(
 struct Player {
     speed: f32,
     rotation_speed: f32,
-    gamepad_id: usize,
     material_handle: Handle<ColorMaterial>,
 }
 
@@ -121,9 +121,11 @@ struct Shooter {
 
 #[derive(Component, Default, Reflect)]
 #[reflect(Component)]
-struct Bullet {
-    gamepad_id: usize,
-}
+struct Bullet;
+
+#[derive(Component, Default, Reflect, Deref, DerefMut)]
+#[reflect(Component)]
+struct ID(usize);
 
 #[derive(Component, Default, Reflect)]
 #[reflect(Component)]
@@ -135,7 +137,7 @@ struct Health {
 fn gamepad_connections(
     mut commands: Commands,
     mut connection_events: EventReader<GamepadConnectionEvent>,
-    players: Query<(Entity, &Player)>,
+    players: Query<(Entity, &ID), With<Player>>,
     windows: Query<&Window>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     player_mesh: Res<PlayerMesh>,
@@ -169,8 +171,8 @@ fn gamepad_connections(
                         speed: 500.0,
                         rotation_speed: 13.0,
                         material_handle,
-                        gamepad_id: gamepad.id,
                     },
+                    ID(gamepad.id),
                     Health {
                         starting_health: 500,
                         current_health: 500,
@@ -182,8 +184,8 @@ fn gamepad_connections(
                 ));
             }
             bevy::input::gamepad::GamepadConnection::Disconnected => {
-                for (player_entity, player) in players.iter() {
-                    if player.gamepad_id == gamepad.id {
+                for (player_entity, id) in players.iter() {
+                    if id.0 == gamepad.id {
                         commands.entity(player_entity).despawn();
                         return;
                     }
@@ -194,15 +196,15 @@ fn gamepad_connections(
 }
 
 fn player_movement(
-    mut players: Query<(&mut Transform, &Player)>,
+    mut players: Query<(&mut Transform, &ID, &Player)>,
     axes: Res<Axis<GamepadAxis>>,
     time: Res<Time>,
     gamepads: Res<Gamepads>,
     windows: Query<&Window>,
 ) {
     for gamepad in gamepads.iter() {
-        for (mut transform, player) in &mut players {
-            if player.gamepad_id != gamepad.id {
+        for (mut transform, id, player) in &mut players {
+            if id.0 != gamepad.id {
                 continue;
             }
             let axis_lx = GamepadAxis {
@@ -234,14 +236,14 @@ fn player_movement(
 }
 
 fn player_rotation(
-    mut players: Query<(&mut Transform, &Player)>,
+    mut players: Query<(&mut Transform, &ID, &Player)>,
     axes: Res<Axis<GamepadAxis>>,
     time: Res<Time>,
     gamepads: Res<Gamepads>,
 ) {
     for gamepad in gamepads.iter() {
-        for (mut transform, player) in &mut players {
-            if player.gamepad_id != gamepad.id {
+        for (mut transform, id, player) in &mut players {
+            if id.0 != gamepad.id {
                 continue;
             }
             let axis_rx = GamepadAxis {
@@ -273,10 +275,10 @@ fn player_rotation(
 fn create_bullets(
     mut commands: Commands,
     bullet_mesh: Res<BulletMesh>,
-    mut players: Query<(&Transform, &Player, &mut Shooter)>,
+    mut players: Query<(&Transform, &ID, &Player, &mut Shooter)>,
     time: Res<Time>,
 ) {
-    for (transform, player, mut shooter) in &mut players {
+    for (transform, id, player, mut shooter) in &mut players {
         shooter.timer.tick(time.delta());
 
         if shooter.timer.just_finished() {
@@ -291,9 +293,8 @@ fn create_bullets(
                         .with_scale(Vec3::new(10.0, 10.0, 0.0)),
                     ..default()
                 },
-                Bullet {
-                    gamepad_id: player.gamepad_id,
-                },
+                Bullet,
+                ID(id.0),
                 Velocity(Vec2::from_angle(angle).rotate(Vec2::X * 600.0)),
                 Name::new("Bullet"),
             ));
@@ -345,13 +346,13 @@ fn despawn_bullets(
 }
 
 fn check_for_collisions(
-    bullet_query: Query<(Entity, &Transform, &Bullet)>,
-    mut player_query: Query<(Entity, &Transform, &Player, &mut Health)>,
+    bullet_query: Query<(Entity, &Transform, &ID), With<Bullet>>,
+    mut player_query: Query<(Entity, &ID, &Transform, &mut Health), With<Player>>,
     mut commands: Commands,
 ) {
-    for (bullet_entity, bullet_transform, bullet) in &bullet_query {
-        for (player_entity, player_transform, player, mut player_health) in &mut player_query {
-            if player.gamepad_id == bullet.gamepad_id {
+    for (player_entity, player_id, player_transform, mut player_health) in &mut player_query {
+        for (bullet_entity, bullet_transform, bullet_id) in &bullet_query {
+            if player_id.0 == bullet_id.0 {
                 continue;
             }
             let collision = collide(
