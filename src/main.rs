@@ -33,6 +33,8 @@ fn main() {
             LogDiagnosticsPlugin::default(),
             FrameTimeDiagnosticsPlugin::default(),
         ))
+        .register_type::<PlayerConfig>()
+        .register_type::<BulletConfig>()
         .init_resource::<BulletMesh>()
         .register_type::<BulletMesh>()
         .init_resource::<PlayerMesh>()
@@ -46,7 +48,9 @@ fn main() {
         .add_plugins(
             WorldInspectorPlugin::default().run_if(input_toggle_active(true, KeyCode::Escape)),
         )
-        .add_systems(Startup, (setup, setup_gamepads, setup_assets))
+        .insert_resource(PlayerConfig { speed: 500.0 })
+        .insert_resource(BulletConfig { speed: 600.0 })
+        .add_systems(Startup, (setup_camera, setup_gamepads, setup_assets))
         .add_systems(
             Update,
             (
@@ -65,22 +69,6 @@ fn main() {
         .run();
 }
 
-fn setup(mut commands: Commands) {
-    let camera = Camera2dBundle::default();
-    // camera.projection.scaling_mode = ScalingMode::AutoMin {
-    //     min_width: 256.0,
-    //     min_height: 144.0,
-    // };
-
-    commands.spawn(camera);
-}
-
-fn setup_gamepads(mut settings: ResMut<GamepadSettings>) {
-    let dz = 0.1;
-    settings.default_axis_settings.set_deadzone_lowerbound(-dz);
-    settings.default_axis_settings.set_deadzone_upperbound(dz);
-}
-
 #[derive(Resource, Default, Reflect)]
 #[reflect(Resource)]
 struct BulletMesh {
@@ -91,6 +79,29 @@ struct BulletMesh {
 #[reflect(Resource)]
 struct PlayerMesh {
     mesh_handle: Handle<Mesh>,
+}
+
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
+struct PlayerConfig {
+    speed: f32,
+}
+
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
+struct BulletConfig {
+    speed: f32,
+}
+
+fn setup_camera(mut commands: Commands) {
+    let camera = Camera2dBundle::default();
+    commands.spawn(camera);
+}
+
+fn setup_gamepads(mut settings: ResMut<GamepadSettings>) {
+    let dz = 0.1;
+    settings.default_axis_settings.set_deadzone_lowerbound(-dz);
+    settings.default_axis_settings.set_deadzone_upperbound(dz);
 }
 
 fn setup_assets(
@@ -107,7 +118,6 @@ fn setup_assets(
 #[derive(Component, Default, Reflect)]
 #[reflect(Component)]
 struct Player {
-    speed: f32,
     rotation_speed: f32,
     material_handle: Handle<ColorMaterial>,
 }
@@ -171,7 +181,6 @@ fn gamepad_connections(
                         ..default()
                     },
                     Player {
-                        speed: 500.0,
                         rotation_speed: 13.0,
                         material_handle,
                     },
@@ -199,14 +208,15 @@ fn gamepad_connections(
 }
 
 fn player_movement(
-    mut players: Query<(&mut Transform, &ID, &Player)>,
+    mut players: Query<(&mut Transform, &ID), With<Player>>,
     axes: Res<Axis<GamepadAxis>>,
     time: Res<Time>,
     gamepads: Res<Gamepads>,
     windows: Query<&Window>,
+    player_config: Res<PlayerConfig>,
 ) {
     for gamepad in gamepads.iter() {
-        for (mut transform, id, player) in &mut players {
+        for (mut transform, id) in &mut players {
             if id.0 != gamepad.id {
                 continue;
             }
@@ -219,7 +229,7 @@ fn player_movement(
                 axis_type: GamepadAxisType::LeftStickY,
             };
             if let (Some(x), Some(y)) = (axes.get(axis_lx), axes.get(axis_ly)) {
-                let movement_amount = player.speed * time.delta_seconds();
+                let movement_amount = player_config.speed * time.delta_seconds();
                 let mut v = Vec2 { x, y };
                 if v.distance(Vec2::ZERO) > 1.0 {
                     v = v.normalize();
@@ -280,6 +290,7 @@ fn create_bullets(
     bullet_mesh: Res<BulletMesh>,
     mut players: Query<(&Transform, &ID, &Player, &mut Shooter)>,
     time: Res<Time>,
+    bullet_config: Res<BulletConfig>,
 ) {
     for (transform, id, player, mut shooter) in &mut players {
         shooter.timer.tick(time.delta());
@@ -298,7 +309,7 @@ fn create_bullets(
                 },
                 Bullet,
                 ID(id.0),
-                Velocity(Vec2::from_angle(angle).rotate(Vec2::X * 600.0)),
+                Velocity(Vec2::from_angle(angle).rotate(Vec2::X) * bullet_config.speed),
                 Name::new("Bullet"),
             ));
         }
