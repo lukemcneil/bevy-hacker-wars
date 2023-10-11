@@ -56,6 +56,7 @@ fn main() {
             shooting_delay: 0.1,
             scale: 50.0,
             invincible: false,
+            starting_health: 10,
         })
         .insert_resource(BulletConfig {
             speed: 600.0,
@@ -92,7 +93,7 @@ fn config_ui_system(
     mut bullet_config: ResMut<BulletConfig>,
     mut ev_player_config_changed: EventWriter<PlayerConfigChanged>,
 ) {
-    bevy_inspector_egui::egui::Window::new("Hello").show(contexts.ctx_mut(), |ui| {
+    bevy_inspector_egui::egui::Window::new("Settings").show(contexts.ctx_mut(), |ui| {
         ui.add(Slider::new(&mut player_config.speed, 50.0..=1000.0).text("player speed"));
         ui.add(Slider::new(&mut player_config.turning_speed, 1.0..=50.0).text("turning speed"));
         if ui
@@ -103,6 +104,9 @@ fn config_ui_system(
                 .changed()
             || ui
                 .checkbox(&mut player_config.invincible, "invincible")
+                .changed()
+            || ui
+                .add(Slider::new(&mut player_config.starting_health, 1..=1000).text("health"))
                 .changed()
         {
             ev_player_config_changed.send_default();
@@ -116,12 +120,12 @@ fn config_ui_system(
 
 fn respond_to_player_config_change(
     mut ev_player_config_changed: EventReader<PlayerConfigChanged>,
-    mut shooters: Query<(Entity, &mut Shooter, &mut Transform), With<Player>>,
+    mut shooters: Query<(Entity, &mut Shooter, &mut Transform, &mut Health), With<Player>>,
     player_config: Res<PlayerConfig>,
     mut commands: Commands,
 ) {
     for _ in ev_player_config_changed.iter() {
-        for (shooter_entity, mut shooter, mut transform) in &mut shooters {
+        for (shooter_entity, mut shooter, mut transform, mut health) in &mut shooters {
             shooter
                 .timer
                 .set_duration(Duration::from_secs_f32(player_config.shooting_delay));
@@ -131,11 +135,11 @@ fn respond_to_player_config_change(
                 z: 0.0,
             };
             if player_config.invincible {
-                println!("here");
                 commands.entity(shooter_entity).remove::<Collider>();
             } else {
                 commands.entity(shooter_entity).insert(Collider);
             }
+            health.current_health = player_config.starting_health;
         }
     }
 }
@@ -160,6 +164,7 @@ struct PlayerConfig {
     shooting_delay: f32,
     scale: f32,
     invincible: bool,
+    starting_health: i32,
 }
 
 #[derive(Resource, Default, Reflect)]
@@ -223,7 +228,6 @@ struct ID(usize);
 #[derive(Component, Default, Reflect)]
 #[reflect(Component)]
 struct Health {
-    starting_health: i32,
     current_health: i32,
 }
 
@@ -258,10 +262,9 @@ fn gamepad_connections(
                             y: rand::thread_rng().gen_range(-h..h),
                             z: gamepad.id as f32,
                         })
-                        .with_scale(Vec3::new(
-                            player_config.scale,
-                            player_config.scale,
-                            0.0,
+                        .with_scale(Vec3::new(player_config.scale, player_config.scale, 0.0))
+                        .with_rotation(Quat::from_rotation_z(
+                            rand::thread_rng().gen_range(0.0..2.0 * PI),
                         )),
                         ..default()
                     },
@@ -269,8 +272,7 @@ fn gamepad_connections(
                     Collider,
                     ID(gamepad.id),
                     Health {
-                        starting_health: 500,
-                        current_health: 500,
+                        current_health: player_config.starting_health,
                     },
                     Shooter {
                         timer: Timer::from_seconds(
