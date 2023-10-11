@@ -1,4 +1,4 @@
-use std::f32::consts::PI;
+use std::{f32::consts::PI, time::Duration};
 
 use bevy::{
     diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
@@ -10,7 +10,8 @@ use bevy::{
     sprite::{collide_aabb::collide, MaterialMesh2dBundle},
     utils::HashSet,
 };
-use bevy_inspector_egui::quick::WorldInspectorPlugin;
+use bevy_inspector_egui::bevy_egui::EguiPlugin;
+use bevy_inspector_egui::{bevy_egui::EguiContexts, egui::Slider};
 use rand::Rng;
 
 fn main() {
@@ -32,6 +33,8 @@ fn main() {
         .add_plugins((
             LogDiagnosticsPlugin::default(),
             FrameTimeDiagnosticsPlugin::default(),
+            // WorldInspectorPlugin::default().run_if(input_toggle_active(true, KeyCode::Escape)),
+            EguiPlugin,
         ))
         .register_type::<PlayerConfig>()
         .register_type::<BulletConfig>()
@@ -41,15 +44,24 @@ fn main() {
         .register_type::<PlayerMesh>()
         .register_type::<Player>()
         .register_type::<Bullet>()
+        .register_type::<Collider>()
         .register_type::<Velocity>()
         .register_type::<ID>()
         .register_type::<Health>()
         .register_type::<Shooter>()
-        .add_plugins(
-            WorldInspectorPlugin::default().run_if(input_toggle_active(true, KeyCode::Escape)),
-        )
-        .insert_resource(PlayerConfig { speed: 500.0 })
-        .insert_resource(BulletConfig { speed: 600.0 })
+        .add_event::<PlayerConfigChanged>()
+        .insert_resource(PlayerConfig {
+            speed: 500.0,
+            turning_speed: 13.0,
+            shooting_delay: 0.1,
+            scale: 50.0,
+            invincible: false,
+        })
+        .insert_resource(BulletConfig {
+            speed: 600.0,
+            collide: true,
+            scale: 10.0,
+        })
         .add_systems(Startup, (setup_camera, setup_gamepads, setup_assets))
         .add_systems(
             Update,
@@ -64,9 +76,68 @@ fn main() {
                     .after(apply_velocity)
                     .after(player_movement),
                 // bounce_bullets,
+                config_ui_system.run_if(input_toggle_active(true, KeyCode::Escape)),
+                respond_to_player_config_change,
             ),
         )
         .run();
+}
+
+#[derive(Event, Default)]
+struct PlayerConfigChanged;
+
+fn config_ui_system(
+    mut contexts: EguiContexts,
+    mut player_config: ResMut<PlayerConfig>,
+    mut bullet_config: ResMut<BulletConfig>,
+    mut ev_player_config_changed: EventWriter<PlayerConfigChanged>,
+) {
+    bevy_inspector_egui::egui::Window::new("Hello").show(contexts.ctx_mut(), |ui| {
+        ui.add(Slider::new(&mut player_config.speed, 50.0..=1000.0).text("player speed"));
+        ui.add(Slider::new(&mut player_config.turning_speed, 1.0..=50.0).text("turning speed"));
+        if ui
+            .add(Slider::new(&mut player_config.shooting_delay, 0.0..=1.0).text("shooting delay"))
+            .changed()
+            || ui
+                .add(Slider::new(&mut player_config.scale, 10.0..=100.0).text("player size"))
+                .changed()
+            || ui
+                .checkbox(&mut player_config.invincible, "invincible")
+                .changed()
+        {
+            ev_player_config_changed.send_default();
+        };
+
+        ui.add(Slider::new(&mut bullet_config.speed, 50.0..=1500.0).text("bullet speed"));
+        ui.checkbox(&mut bullet_config.collide, "bullets collide");
+        ui.add(Slider::new(&mut bullet_config.scale, 1.0..=100.0).text("bullet size"));
+    });
+}
+
+fn respond_to_player_config_change(
+    mut ev_player_config_changed: EventReader<PlayerConfigChanged>,
+    mut shooters: Query<(Entity, &mut Shooter, &mut Transform), With<Player>>,
+    player_config: Res<PlayerConfig>,
+    mut commands: Commands,
+) {
+    for _ in ev_player_config_changed.iter() {
+        for (shooter_entity, mut shooter, mut transform) in &mut shooters {
+            shooter
+                .timer
+                .set_duration(Duration::from_secs_f32(player_config.shooting_delay));
+            transform.scale = Vec3 {
+                x: player_config.scale,
+                y: player_config.scale,
+                z: 0.0,
+            };
+            if player_config.invincible {
+                println!("here");
+                commands.entity(shooter_entity).remove::<Collider>();
+            } else {
+                commands.entity(shooter_entity).insert(Collider);
+            }
+        }
+    }
 }
 
 #[derive(Resource, Default, Reflect)]
@@ -85,12 +156,18 @@ struct PlayerMesh {
 #[reflect(Resource)]
 struct PlayerConfig {
     speed: f32,
+    turning_speed: f32,
+    shooting_delay: f32,
+    scale: f32,
+    invincible: bool,
 }
 
 #[derive(Resource, Default, Reflect)]
 #[reflect(Resource)]
 struct BulletConfig {
     speed: f32,
+    collide: bool,
+    scale: f32,
 }
 
 fn setup_camera(mut commands: Commands) {
@@ -118,7 +195,6 @@ fn setup_assets(
 #[derive(Component, Default, Reflect)]
 #[reflect(Component)]
 struct Player {
-    rotation_speed: f32,
     material_handle: Handle<ColorMaterial>,
 }
 
@@ -135,6 +211,10 @@ struct Shooter {
 #[derive(Component, Default, Reflect)]
 #[reflect(Component)]
 struct Bullet;
+
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
+struct Collider;
 
 #[derive(Component, Default, Reflect, Deref, DerefMut)]
 #[reflect(Component)]
@@ -154,6 +234,7 @@ fn gamepad_connections(
     windows: Query<&Window>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     player_mesh: Res<PlayerMesh>,
+    player_config: Res<PlayerConfig>,
 ) {
     for connection_event in connection_events.iter() {
         let gamepad = connection_event.gamepad;
@@ -177,20 +258,25 @@ fn gamepad_connections(
                             y: rand::thread_rng().gen_range(-h..h),
                             z: gamepad.id as f32,
                         })
-                        .with_scale(Vec3::new(50.0, 50.0, 0.0)),
+                        .with_scale(Vec3::new(
+                            player_config.scale,
+                            player_config.scale,
+                            0.0,
+                        )),
                         ..default()
                     },
-                    Player {
-                        rotation_speed: 13.0,
-                        material_handle,
-                    },
+                    Player { material_handle },
+                    Collider,
                     ID(gamepad.id),
                     Health {
                         starting_health: 500,
                         current_health: 500,
                     },
                     Shooter {
-                        timer: Timer::from_seconds(0.001, TimerMode::Repeating),
+                        timer: Timer::from_seconds(
+                            player_config.shooting_delay,
+                            TimerMode::Repeating,
+                        ),
                     },
                     Name::new(format!("Player: {}", info.name)),
                 ));
@@ -249,13 +335,14 @@ fn player_movement(
 }
 
 fn player_rotation(
-    mut players: Query<(&mut Transform, &ID, &Player)>,
+    mut players: Query<(&mut Transform, &ID), With<Player>>,
     axes: Res<Axis<GamepadAxis>>,
     time: Res<Time>,
     gamepads: Res<Gamepads>,
+    player_config: Res<PlayerConfig>,
 ) {
     for gamepad in gamepads.iter() {
-        for (mut transform, id, player) in &mut players {
+        for (mut transform, id) in &mut players {
             if id.0 != gamepad.id {
                 continue;
             }
@@ -272,7 +359,7 @@ fn player_rotation(
                 if v != Vec2::ZERO {
                     let target_quat = Quat::from_rotation_z(-v.angle_between(Vec2::X) - PI / 2.0);
                     let angle_between = transform.rotation.angle_between(target_quat);
-                    let max_angle = player.rotation_speed * time.delta_seconds();
+                    let max_angle = player_config.turning_speed * time.delta_seconds();
                     if angle_between > max_angle {
                         let s = max_angle / angle_between;
                         transform.rotation = transform.rotation.slerp(target_quat, s);
@@ -299,12 +386,12 @@ fn create_bullets(
             let (v, mut angle) = transform.rotation.to_axis_angle();
             angle *= v.z;
             angle += PI / 2.0;
-            commands.spawn((
+            let mut bullet_commands = commands.spawn((
                 MaterialMesh2dBundle {
                     mesh: bullet_mesh.mesh_handle.clone().into(),
                     material: player.material_handle.clone(),
                     transform: Transform::from_translation(transform.translation)
-                        .with_scale(Vec3::new(10.0, 10.0, 0.0)),
+                        .with_scale(Vec3::new(bullet_config.scale, bullet_config.scale, 0.0)),
                     ..default()
                 },
                 Bullet,
@@ -312,6 +399,9 @@ fn create_bullets(
                 Velocity(Vec2::from_angle(angle).rotate(Vec2::X) * bullet_config.speed),
                 Name::new("Bullet"),
             ));
+            if bullet_config.collide {
+                bullet_commands.insert(Collider);
+            }
         }
     }
 }
@@ -361,7 +451,7 @@ fn despawn_bullets(
 
 fn check_for_collisions(
     bullet_query: Query<(Entity, &ID, &Transform), With<Bullet>>,
-    mut hit_query: Query<(Entity, &ID, &Transform, Option<&mut Health>)>,
+    mut hit_query: Query<(Entity, &ID, &Transform, Option<&mut Health>), With<Collider>>,
     mut commands: Commands,
 ) {
     let mut bullets_despawned = HashSet::new();
