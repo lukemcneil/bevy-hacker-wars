@@ -528,19 +528,32 @@ fn kill_player(
 
 fn handle_buttons(
     mut gamepad_evr: EventReader<GamepadEvent>,
-    mut players: Query<(Entity, &ID, Option<&Alive>, &mut Transform, &mut Health), With<Player>>,
+    mut players: Query<(
+        Entity,
+        &ID,
+        Option<&Alive>,
+        &mut Transform,
+        &mut Health,
+        &mut Player,
+    )>,
     mut commands: Commands,
     windows: Query<&Window>,
     player_config: Res<PlayerConfig>,
     mut ev_player_died: EventWriter<PlayerDied>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     for ev in gamepad_evr.iter() {
         match ev {
-            GamepadEvent::Button(button_ev) => match button_ev.button_type {
-                GamepadButtonType::Mode => {
-                    if button_ev.value == 1.0 {
-                        for (entity, id, alive_option, mut transform, mut health) in &mut players {
-                            if id.0 == button_ev.gamepad.id {
+            GamepadEvent::Button(button_ev) => {
+                if button_ev.value == 0.0 {
+                    continue;
+                }
+                for (entity, id, alive_option, mut transform, mut health, mut player) in
+                    &mut players
+                {
+                    if id.0 == button_ev.gamepad.id {
+                        match button_ev.button_type {
+                            GamepadButtonType::Mode => {
                                 match alive_option {
                                     Some(_) => {
                                         ev_player_died.send(PlayerDied { id: id.0 });
@@ -559,11 +572,20 @@ fn handle_buttons(
                                 }
                                 return;
                             }
+                            GamepadButtonType::Select => {
+                                let material = materials.get_mut(&player.material_handle).unwrap();
+                                let mut rng = rand::thread_rng();
+                                material.color = Color::rgb(
+                                    rng.gen_range(0.0..1.0),
+                                    rng.gen_range(0.0..1.0),
+                                    rng.gen_range(0.0..1.0),
+                                );
+                            }
+                            _ => (),
                         }
                     }
                 }
-                _ => (),
-            },
+            }
             _ => (),
         }
     }
