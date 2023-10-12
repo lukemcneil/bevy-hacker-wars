@@ -4,7 +4,7 @@ use bevy::{
     diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
     input::{
         common_conditions::input_toggle_active,
-        gamepad::{GamepadConnectionEvent, GamepadSettings},
+        gamepad::{GamepadConnectionEvent, GamepadEvent, GamepadSettings},
     },
     prelude::*,
     sprite::{collide_aabb::collide, MaterialMesh2dBundle},
@@ -45,11 +45,13 @@ fn main() {
         .register_type::<Player>()
         .register_type::<Bullet>()
         .register_type::<Collider>()
+        .register_type::<Alive>()
         .register_type::<Velocity>()
         .register_type::<ID>()
         .register_type::<Health>()
         .register_type::<Shooter>()
         .add_event::<PlayerConfigChanged>()
+        .add_event::<PlayerDied>()
         .insert_resource(PlayerConfig {
             speed: 500.0,
             turning_speed: 13.0,
@@ -79,6 +81,8 @@ fn main() {
                 // bounce_bullets,
                 config_ui_system.run_if(input_toggle_active(true, KeyCode::Escape)),
                 respond_to_player_config_change,
+                handle_buttons,
+                kill_player.after(player_movement),
             ),
         )
         .run();
@@ -86,6 +90,11 @@ fn main() {
 
 #[derive(Event, Default)]
 struct PlayerConfigChanged;
+
+#[derive(Event, Default)]
+struct PlayerDied {
+    id: usize,
+}
 
 fn config_ui_system(
     mut contexts: EguiContexts,
@@ -221,6 +230,10 @@ struct Bullet;
 #[reflect(Component)]
 struct Collider;
 
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
+struct Alive;
+
 #[derive(Component, Default, Reflect, Deref, DerefMut)]
 #[reflect(Component)]
 struct ID(usize);
@@ -280,6 +293,7 @@ fn gamepad_connections(
                             TimerMode::Repeating,
                         ),
                     },
+                    Alive,
                     Name::new(format!("Player: {}", info.name)),
                 ));
             }
@@ -296,7 +310,7 @@ fn gamepad_connections(
 }
 
 fn player_movement(
-    mut players: Query<(&mut Transform, &ID), With<Player>>,
+    mut players: Query<(&mut Transform, &ID), (With<Player>, With<Alive>)>,
     axes: Res<Axis<GamepadAxis>>,
     time: Res<Time>,
     gamepads: Res<Gamepads>,
@@ -337,7 +351,7 @@ fn player_movement(
 }
 
 fn player_rotation(
-    mut players: Query<(&mut Transform, &ID), With<Player>>,
+    mut players: Query<(&mut Transform, &ID), (With<Player>, With<Alive>)>,
     axes: Res<Axis<GamepadAxis>>,
     time: Res<Time>,
     gamepads: Res<Gamepads>,
@@ -377,7 +391,7 @@ fn player_rotation(
 fn create_bullets(
     mut commands: Commands,
     bullet_mesh: Res<BulletMesh>,
-    mut players: Query<(&Transform, &ID, &Player, &mut Shooter)>,
+    mut players: Query<(&Transform, &ID, &Player, &mut Shooter), With<Alive>>,
     time: Res<Time>,
     bullet_config: Res<BulletConfig>,
 ) {
@@ -455,6 +469,7 @@ fn check_for_collisions(
     bullet_query: Query<(Entity, &ID, &Transform), With<Bullet>>,
     mut hit_query: Query<(Entity, &ID, &Transform, Option<&mut Health>), With<Collider>>,
     mut commands: Commands,
+    mut ev_player_died: EventWriter<PlayerDied>,
 ) {
     let mut bullets_despawned = HashSet::new();
     for (bullet_entity, bullet_id, bullet_transform) in &bullet_query {
@@ -481,7 +496,7 @@ fn check_for_collisions(
                     Some(mut player_health) => {
                         player_health.current_health -= 1;
                         if player_health.current_health == 0 {
-                            commands.entity(hit_entity).despawn();
+                            ev_player_died.send(PlayerDied { id: hit_id.0 });
                         }
                     }
                     None => {
@@ -491,6 +506,65 @@ fn check_for_collisions(
                 }
                 break;
             }
+        }
+    }
+}
+
+fn kill_player(
+    mut ev_player_died: EventReader<PlayerDied>,
+    mut players: Query<(Entity, &ID, &mut Transform), (With<Player>, With<Alive>)>,
+    mut commands: Commands,
+) {
+    for ev in ev_player_died.iter() {
+        for (entity, id, mut transform) in &mut players {
+            if id.0 == ev.id {
+                commands.entity(entity).remove::<Alive>();
+                transform.translation.x = f32::MAX;
+                transform.translation.y = f32::MAX;
+            }
+        }
+    }
+}
+
+fn handle_buttons(
+    mut gamepad_evr: EventReader<GamepadEvent>,
+    mut players: Query<(Entity, &ID, Option<&Alive>, &mut Transform, &mut Health), With<Player>>,
+    mut commands: Commands,
+    windows: Query<&Window>,
+    player_config: Res<PlayerConfig>,
+    mut ev_player_died: EventWriter<PlayerDied>,
+) {
+    for ev in gamepad_evr.iter() {
+        match ev {
+            GamepadEvent::Button(button_ev) => match button_ev.button_type {
+                GamepadButtonType::Mode => {
+                    if button_ev.value == 1.0 {
+                        for (entity, id, alive_option, mut transform, mut health) in &mut players {
+                            if id.0 == button_ev.gamepad.id {
+                                match alive_option {
+                                    Some(_) => {
+                                        ev_player_died.send(PlayerDied { id: id.0 });
+                                    }
+                                    None => {
+                                        commands.entity(entity).insert(Alive);
+                                        let window = windows.single();
+                                        let w = window.width() / 2.0;
+                                        let h = window.height() / 2.0;
+                                        transform.translation.x =
+                                            rand::thread_rng().gen_range(-w..w);
+                                        transform.translation.y =
+                                            rand::thread_rng().gen_range(-h..h);
+                                        health.current_health = player_config.starting_health;
+                                    }
+                                }
+                                return;
+                            }
+                        }
+                    }
+                }
+                _ => (),
+            },
+            _ => (),
         }
     }
 }
