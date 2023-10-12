@@ -548,9 +548,7 @@ fn handle_buttons(
                 if button_ev.value == 0.0 {
                     continue;
                 }
-                for (entity, id, alive_option, mut transform, mut health, mut player) in
-                    &mut players
-                {
+                for (entity, id, alive_option, mut transform, mut health, player) in &mut players {
                     if id.0 == button_ev.gamepad.id {
                         match button_ev.button_type {
                             GamepadButtonType::Mode => {
