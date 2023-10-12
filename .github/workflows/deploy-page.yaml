@@ -1,7 +1,11 @@
 name: deploy-github-page
 
 on:
+    push:
     pull_request:
+        branches:
+            - main
+            - github-pages-deploy
 
 permissions:
     contents: write
